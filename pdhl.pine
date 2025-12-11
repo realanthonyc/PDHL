@@ -1,0 +1,101 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © realanthonyc https://www.tradingview.com/u/realanthonyc
+
+//@version=6
+// --------------------------------------------------------------------
+//  Dynamic Previous Day High-Low (PDHL)
+//  On Github: https://github.com/realanthonyc/PDHL
+//  v1.0.2
+// --------------------------------------------------------------------
+indicator("Dynamic Previous Day High-Low (PDHL)", shorttitle = "PDHL", format=format.price, overlay = true, precision=2, max_lines_count = 500)
+
+// === Inputs ===
+int startHour = input.int(12, "Initial Position (Time)", minval = 0, maxval = 16, display = display.data_window)
+
+// === Visibility Check ===
+bool isStandardTime = timeframe.isseconds or timeframe.isminutes
+bool isDurationOk   = timeframe.in_seconds() <= 3600
+bool showIndicator  = isStandardTime and isDurationOk
+
+// === Colors ===
+color colorCore = color.rgb(235, 143, 5) 
+color colorExt  = color.new(color.yellow, 0)
+
+// === Fetch Previous Trading Day's High/Low ===
+float prevDayHigh = request.security(syminfo.tickerid, "D", high[1])
+float prevDayLow  = request.security(syminfo.tickerid, "D", low[1])
+
+// === Track Today's High/Low Intraday ===
+var float todayHigh = na
+var float todayLow  = na
+
+bool isNewDay = ta.change(time("D")) != 0
+
+if showIndicator
+    if isNewDay
+        todayHigh := high
+        todayLow  := low
+    else
+        todayHigh := math.max(todayHigh, high)
+        todayLow  := math.min(todayLow, low)
+
+// === Timestamps for X-Axis Positioning ===
+int timeInitial = timestamp(year, month, dayofmonth, startHour, 0) 
+int timeMax     = timestamp(year, month, dayofmonth, 16, 0) 
+
+// === State Variables for Drawing Objects ===
+var line coreLine   = na // Connects Prev High to Prev Low
+var line extTopLine = na // Extension above Prev High
+var line extBotLine = na // Extension below Prev Low
+
+// === Draw / Update Logic ===
+
+if showIndicator
+    
+    // 1. Create objects on the first bar of the day
+    if isNewDay and not na(prevDayHigh)
+        // Initialize Core Line
+        coreLine := line.new(x1=timeInitial, y1=prevDayLow, x2=timeInitial, y2=prevDayHigh, xloc=xloc.bar_time, color=colorCore, width=2)
+        
+        // Initialize Extension Lines: initially 0 length
+        extTopLine := line.new(x1=timeInitial, y1=prevDayHigh, x2=timeInitial, y2=prevDayHigh, xloc=xloc.bar_time, color=colorExt, width=2)
+        extBotLine := line.new(x1=timeInitial, y1=prevDayLow, x2=timeInitial, y2=prevDayLow, xloc=xloc.bar_time, color=colorExt, width=2)
+
+    // 2. Update objects on every bar
+    if not na(coreLine)
+        // A. Determine X Position (Dynamic Logic)
+        int currentX = na
+        
+        if time < timeInitial
+            currentX := timeInitial
+        else
+            int dynamicTarget = time + 3600000 
+            currentX := math.min(dynamicTarget, timeMax)
+
+        // B. Update Core Line (Always connects PrevLow to PrevHigh)
+        line.set_x1(coreLine, currentX)
+        line.set_y1(coreLine, prevDayLow)
+        line.set_x2(coreLine, currentX)
+        line.set_y2(coreLine, prevDayHigh)
+        
+        // C. Update Top Extension (Only shows if TodayHigh > PrevHigh)
+        if todayHigh > prevDayHigh
+            line.set_x1(extTopLine, currentX)
+            line.set_y1(extTopLine, prevDayHigh) // Starts at Core Top
+            line.set_x2(extTopLine, currentX)
+            line.set_y2(extTopLine, todayHigh)   // Ends at Today High
+        else
+            // Hide by setting coordinates to na
+            line.set_x1(extTopLine, na)
+            line.set_x2(extTopLine, na)
+
+        // D. Update Bottom Extension (Only shows if TodayLow < PrevLow)
+        if todayLow < prevDayLow
+            line.set_x1(extBotLine, currentX)
+            line.set_y1(extBotLine, prevDayLow)  // Starts at Core Bottom
+            line.set_x2(extBotLine, currentX)
+            line.set_y2(extBotLine, todayLow)    // Ends at Today Low
+        else
+            // Hide by setting coordinates to na
+            line.set_x1(extBotLine, na)
+            line.set_x2(extBotLine, na)
