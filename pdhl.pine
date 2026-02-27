@@ -3,99 +3,106 @@
 
 //@version=6
 // --------------------------------------------------------------------
-//  Dynamic Previous Day High-Low (PDHL)
+//  Previous Day High-Low (PDHL)
 //  On Github: https://github.com/realanthonyc/PDHL
-//  v1.0.2
+//  v1.1.0
 // --------------------------------------------------------------------
-indicator("Dynamic Previous Day High-Low (PDHL)", shorttitle = "PDHL", format=format.price, overlay = true, precision=2, max_lines_count = 500)
+indicator("Previous Day High-Low (PDHL)", shorttitle = "PDHL", format = format.price, overlay = true, precision = 2, max_lines_count = 450)
 
 // === Inputs ===
-int startHour = input.int(12, "Initial Position (Time)", minval = 0, maxval = 16, display = display.data_window)
-
-// === Visibility Check ===
-bool isStandardTime = timeframe.isseconds or timeframe.isminutes
-bool isDurationOk   = timeframe.in_seconds() <= 3600
-bool showIndicator  = isStandardTime and isDurationOk
+string sessionInput = input.session("0930-1600", "Trading Session", tooltip = "Only prices within this time window are recorded. Use 0930-1600 for US Stocks or 0000-0000 for Crypto.")
+int midHour = input.int(12, "Initial Position Hour", minval = 0, maxval = 23, tooltip = "The X-axis position before this hour will be fixed here.")
+string timeZone = syminfo.timezone
 
 // === Colors ===
-color colorCore = color.rgb(235, 143, 5) 
-color colorExt  = color.new(color.yellow, 0)
+color colorCore = color.rgb(235, 143, 5)
+color colorExt = color.new(color.yellow, 0)
 
-// === Fetch Previous Trading Day's High/Low ===
-float prevDayHigh = request.security(syminfo.tickerid, "D", high[1])
-float prevDayLow  = request.security(syminfo.tickerid, "D", low[1])
+// === Fetch Last Trading Day's Data ===
+// Referencing high[1] on Daily timeframe ensures we get the most recently closed daily bar.
+float pdhRaw = request.security(syminfo.tickerid, "D", high[1], lookahead = barmerge.lookahead_on)
+float pdlRaw = request.security(syminfo.tickerid, "D", low[1], lookahead = barmerge.lookahead_on)
 
-// === Track Today's High/Low Intraday ===
-var float todayHigh = na
-var float todayLow  = na
+// === Session & Price Tracking ===
+bool inSession = not na(time(timeframe.period, sessionInput, timeZone))
+bool isNewDay = ta.change(time("D", timeZone)) != 0
+bool isSessionStart = inSession and (not inSession[1] or isNewDay)
 
-bool isNewDay = ta.change(time("D")) != 0
+var float stablePrevHigh = na
+var float stablePrevLow = na
+var float currentSessionHigh = na
+var float currentSessionLow = na
 
-if showIndicator
-    if isNewDay
-        todayHigh := high
-        todayLow  := low
-    else
-        todayHigh := math.max(todayHigh, high)
-        todayLow  := math.min(todayLow, low)
+// Update Previous Day values and reset Current Session values at the start of a new session
+if isSessionStart
+    stablePrevHigh := pdhRaw
+    stablePrevLow := pdlRaw
+    currentSessionHigh := high
+    currentSessionLow := low
+else if inSession
+    currentSessionHigh := math.max(nz(currentSessionHigh, high), high)
+    currentSessionLow := math.min(nz(currentSessionLow, low), low)
 
-// === Timestamps for X-Axis Positioning ===
-int timeInitial = timestamp(year, month, dayofmonth, startHour, 0) 
-int timeMax     = timestamp(year, month, dayofmonth, 16, 0) 
+// === X-Axis Calculation Logic ===
+int endHourParsed = int(str.tonumber(str.substring(sessionInput, 5, 7)))
+int endMinParsed = int(str.tonumber(str.substring(sessionInput, 7, 9)))
+bool isFullDay = sessionInput == "0000-0000"
+int finalEndHour = isFullDay and endHourParsed == 0 ? 23 : endHourParsed
+int finalEndMin = isFullDay and endHourParsed == 0 ? 59 : endMinParsed
 
-// === State Variables for Drawing Objects ===
-var line coreLine   = na // Connects Prev High to Prev Low
-var line extTopLine = na // Extension above Prev High
-var line extBotLine = na // Extension below Prev Low
-
-// === Draw / Update Logic ===
-
-if showIndicator
+get_x_pos(t) =>
+    // Session end for the bar's day
+    int sessionEndTs = timestamp(timeZone, year(t, timeZone), month(t, timeZone), dayofmonth(t, timeZone), finalEndHour, finalEndMin)
+    int midTs = timestamp(timeZone, year(t, timeZone), month(t, timeZone), dayofmonth(t, timeZone), midHour, 0)
     
-    // 1. Create objects on the first bar of the day
-    if isNewDay and not na(prevDayHigh)
-        // Initialize Core Line
-        coreLine := line.new(x1=timeInitial, y1=prevDayLow, x2=timeInitial, y2=prevDayHigh, xloc=xloc.bar_time, color=colorCore, width=2)
-        
-        // Initialize Extension Lines: initially 0 length
-        extTopLine := line.new(x1=timeInitial, y1=prevDayHigh, x2=timeInitial, y2=prevDayHigh, xloc=xloc.bar_time, color=colorExt, width=2)
-        extBotLine := line.new(x1=timeInitial, y1=prevDayLow, x2=timeInitial, y2=prevDayLow, xloc=xloc.bar_time, color=colorExt, width=2)
-
-    // 2. Update objects on every bar
-    if not na(coreLine)
-        // A. Determine X Position (Dynamic Logic)
-        int currentX = na
-        
-        if time < timeInitial
-            currentX := timeInitial
+    int xPos = sessionEndTs
+    
+    bool isToday = year(t, timeZone) == year(timenow, timeZone) and month(t, timeZone) == month(timenow, timeZone) and dayofmonth(t, timeZone) == dayofmonth(timenow, timeZone)
+    
+    if isToday
+        if t < midTs
+            xPos := midTs
         else
-            int dynamicTarget = time + 3600000 
-            currentX := math.min(dynamicTarget, timeMax)
+            // Dynamic push forward by 1 hour, capped at session end
+            xPos := math.min(t + 3600000, sessionEndTs)
+    else
+        // For historical days: fix at the session end of that day
+        xPos := sessionEndTs
+    
+    xPos
 
-        // B. Update Core Line (Always connects PrevLow to PrevHigh)
-        line.set_x1(coreLine, currentX)
-        line.set_y1(coreLine, prevDayLow)
-        line.set_x2(coreLine, currentX)
-        line.set_y2(coreLine, prevDayHigh)
+// === Drawing Logic ===
+var line liveCore = na
+var line liveTop = na
+var line liveBot = na
+
+if inSession and not na(stablePrevHigh) and not na(stablePrevLow)
+    int targetX = get_x_pos(time)
+    
+    if isSessionStart
+        // Create new lines for the current session
+        // When lines exceed max_lines_count (450), oldest lines are auto-deleted by Pine Script.
+        liveCore := line.new(targetX, stablePrevLow, targetX, stablePrevHigh, xloc = xloc.bar_time, color = colorCore, width = 2)
+        liveTop := line.new(targetX, stablePrevHigh, targetX, stablePrevHigh, xloc = xloc.bar_time, color = colorExt, width = 2)
+        liveBot := line.new(targetX, stablePrevLow, targetX, stablePrevLow, xloc = xloc.bar_time, color = colorExt, width = 2)
+    else if not na(liveCore)
+        // Update lines dynamically during the session
+        line.set_x1(liveCore, targetX)
+        line.set_y1(liveCore, stablePrevLow)
+        line.set_x2(liveCore, targetX)
+        line.set_y2(liveCore, stablePrevHigh)
         
-        // C. Update Top Extension (Only shows if TodayHigh > PrevHigh)
-        if todayHigh > prevDayHigh
-            line.set_x1(extTopLine, currentX)
-            line.set_y1(extTopLine, prevDayHigh) // Starts at Core Top
-            line.set_x2(extTopLine, currentX)
-            line.set_y2(extTopLine, todayHigh)   // Ends at Today High
+        // Yellow Extensions
+        if not na(currentSessionHigh) and currentSessionHigh > stablePrevHigh
+            line.set_xy1(liveTop, targetX, stablePrevHigh)
+            line.set_xy2(liveTop, targetX, currentSessionHigh)
         else
-            // Hide by setting coordinates to na
-            line.set_x1(extTopLine, na)
-            line.set_x2(extTopLine, na)
-
-        // D. Update Bottom Extension (Only shows if TodayLow < PrevLow)
-        if todayLow < prevDayLow
-            line.set_x1(extBotLine, currentX)
-            line.set_y1(extBotLine, prevDayLow)  // Starts at Core Bottom
-            line.set_x2(extBotLine, currentX)
-            line.set_y2(extBotLine, todayLow)    // Ends at Today Low
+            line.set_xy1(liveTop, na, na)
+            line.set_xy2(liveTop, na, na)
+           
+        if not na(currentSessionLow) and currentSessionLow < stablePrevLow
+            line.set_xy1(liveBot, targetX, stablePrevLow)
+            line.set_xy2(liveBot, targetX, currentSessionLow)
         else
-            // Hide by setting coordinates to na
-            line.set_x1(extBotLine, na)
-            line.set_x2(extBotLine, na)
+            line.set_xy1(liveBot, na, na)
+            line.set_xy2(liveBot, na, na)
